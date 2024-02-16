@@ -216,6 +216,8 @@ int CudaRasterizer::Rasterizer::forward(
 	const float tan_fovx, float tan_fovy,
 	const bool prefiltered,
 	float* out_color,
+	float* out_depth,
+	int* out_indices,
 	int* radii,
 	bool debug)
 {
@@ -300,6 +302,7 @@ int CudaRasterizer::Rasterizer::forward(
 	int bit = getHigherMsb(tile_grid.x * tile_grid.y);
 
 	// Sort complete list of (duplicated) Gaussian indices by keys
+	// Hsiao: The binningState.point_list is the index of the splats
 	CHECK_CUDA(cub::DeviceRadixSort::SortPairs(
 		binningState.list_sorting_space,
 		binningState.sorting_size,
@@ -322,6 +325,7 @@ int CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(FORWARD::render(
 		tile_grid, block,
 		imgState.ranges,
+		binningState.point_list_keys,
 		binningState.point_list,
 		width, height,
 		geomState.means2D,
@@ -330,7 +334,9 @@ int CudaRasterizer::Rasterizer::forward(
 		imgState.accum_alpha,
 		imgState.n_contrib,
 		background,
-		out_color), debug)
+		out_color,
+		out_depth,
+		out_indices), debug)
 
 	return num_rendered;
 }

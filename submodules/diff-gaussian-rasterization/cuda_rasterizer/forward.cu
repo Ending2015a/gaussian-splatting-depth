@@ -262,7 +262,8 @@ template <uint32_t CHANNELS>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
-	const uint32_t* __restrict__ point_list,
+	const uint64_t* __restrict__ point_list_keys,
+	const uint32_t* __restrict__ point_list, // index of the splat
 	int W, int H,
 	const float2* __restrict__ points_xy_image,
 	const float* __restrict__ features,
@@ -270,7 +271,9 @@ renderCUDA(
 	float* __restrict__ final_T,
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
-	float* __restrict__ out_color)
+	float* __restrict__ out_color,
+	float* __restrict__ out_depth,
+	int* __restrict__ out_indices)
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -293,6 +296,7 @@ renderCUDA(
 
 	// Allocate storage for batches of collectively fetched data.
 	__shared__ int collected_id[BLOCK_SIZE];
+	__shared__ float collected_depth[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
 
@@ -301,6 +305,9 @@ renderCUDA(
 	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
+	int max_alpha_id = -1;
+	float max_alpha = 0.0;
+	float max_alpha_depth = 0.0;
 
 	// Iterate over batches until all done or range is complete
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
@@ -318,6 +325,8 @@ renderCUDA(
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+			uint32_t coll_depth = (uint32_t)(point_list_keys[range.x + progress] & 0xFFFFFFFF);
+			collected_depth[block.thread_rank()] = *reinterpret_cast<float*>(&coll_depth);
 		}
 		block.sync();
 
@@ -354,6 +363,13 @@ renderCUDA(
 			for (int ch = 0; ch < CHANNELS; ch++)
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
 
+			if (alpha > max_alpha && alpha > 0.01)
+			{
+				max_alpha = alpha;
+				max_alpha_id = collected_id[j];
+				max_alpha_depth = collected_depth[j];
+			}
+
 			T = test_T;
 
 			// Keep track of last range entry to update this
@@ -369,13 +385,18 @@ renderCUDA(
 		final_T[pix_id] = T;
 		n_contrib[pix_id] = last_contributor;
 		for (int ch = 0; ch < CHANNELS; ch++)
+		{
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
+		}
+		out_depth[pix_id] = max_alpha_depth;
+		out_indices[pix_id] = max_alpha_id;
 	}
 }
 
 void FORWARD::render(
 	const dim3 grid, dim3 block,
 	const uint2* ranges,
+	const uint64_t* point_list_keys,
 	const uint32_t* point_list,
 	int W, int H,
 	const float2* means2D,
@@ -384,10 +405,13 @@ void FORWARD::render(
 	float* final_T,
 	uint32_t* n_contrib,
 	const float* bg_color,
-	float* out_color)
+	float* out_color,
+	float* out_depth,
+	int* out_indices)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
+		point_list_keys,
 		point_list,
 		W, H,
 		means2D,
@@ -396,7 +420,9 @@ void FORWARD::render(
 		final_T,
 		n_contrib,
 		bg_color,
-		out_color);
+		out_color,
+		out_depth,
+		out_indices);
 }
 
 void FORWARD::preprocess(int P, int D, int M,

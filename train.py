@@ -11,7 +11,11 @@
 
 import os
 import torch
+import numpy as np
 from random import randint
+import imageio.v2 as imageio
+import plotly.express as plotly_ex
+import matplotlib.pyplot as plt
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
 import sys
@@ -86,6 +90,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
+        image_indices = render_pkg['indices']
+        image_depth = render_pkg['depth']
+
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
@@ -126,6 +133,47 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
+                
+            if (iteration % 1000 < 5):
+                indices = image_indices.detach().cpu().numpy().copy()
+                depth = image_depth.detach().cpu().numpy().copy()
+
+                image = image.permute(1, 2, 0).detach().cpu().numpy().copy()
+                image = (image.clip(0, 1) * 255).astype(np.uint8)
+                
+                gt_image = gt_image.permute(1, 2, 0).detach().cpu().numpy().copy()
+                gt_image = (gt_image.clip(0, 1) * 255).astype(np.uint8)
+                
+                
+                fig, (ax1, ax2, ax3, ax4) = plt.subplots(ncols=4, figsize=(12, 5))
+
+                ax1.imshow(gt_image)
+                ax2.imshow(image)
+                ax3.imshow(indices)
+                ax4.imshow(depth)
+                
+                ax1.set_title('Ground truth')
+                ax2.set_title('Splats')
+                ax3.set_title('Indices')
+                ax4.set_title('depth')
+                
+                plt.tight_layout()
+                
+                plt.savefig(
+                    os.path.join(scene.model_path, f"{iteration:06d}_image.png"),
+                    facecolor='w', dpi=150
+                )
+                
+                plt.close('all')
+
+                # save plotly
+                fig = plotly_ex.imshow(indices)
+                fig.write_html(os.path.join(scene.model_path, f'{iteration:06d}_indices.html'))
+                fig.show(block=False)
+                
+                fig = plotly_ex.imshow(depth)
+                fig.write_html(os.path.join(scene.model_path, f'{iteration:06d}_depth.html'))
+                fig.show(block=False)
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
